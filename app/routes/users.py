@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr, Field
+import re
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,9 +47,16 @@ class UserRow(BaseModel):
 
 
 class InviteRequest(BaseModel):
-    email: EmailStr
+    email: str
     role: str = Field(default="tenant_user", pattern="^(tenant_admin|tenant_user)$")
 
+    @field_validator("email")
+    @classmethod
+    def _normalize_and_check(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", v):
+            raise ValueError("Invalid email format")
+        return v
 
 class RoleUpdate(BaseModel):
     role: str = Field(pattern="^(tenant_admin|tenant_user)$")
