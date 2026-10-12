@@ -356,7 +356,6 @@ async def get_active_tenant_context(
                 select(UserTenantMembership).where(
                     UserTenantMembership.user_id == current_user.id,
                     UserTenantMembership.tenant_id == tenant_id,
-                    UserTenantMembership.status == MembershipStatus.active,
                 )
             )
 
@@ -379,9 +378,25 @@ async def get_active_tenant_context(
                 )
 
             if membership is None:
+                raise HTTPException(status_code=404, detail="No membership in this tenant")
+
+            # First-login activation flip: invited members can enter the tenant once
+            # they have actually authenticated, but they still need to be activated.
+            if membership.status == MembershipStatus.invited:
+                from datetime import datetime
+
+                membership.status = MembershipStatus.active
+                if hasattr(membership, "accepted_at"):
+                    membership.accepted_at = datetime.utcnow()
+                try:
+                    await session.flush()
+                except Exception:
+                    logger.exception("activate membership flush failed; continuing")
+
+            if membership.status == MembershipStatus.suspended:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="No active membership in this tenant",
+                    detail="This user has been suspended",
                 )
 
             return TenantContext(
@@ -498,7 +513,9 @@ async def get_user_memberships(user_id: uuid.UUID) -> list[dict[str, Any]]:
                 .join(Tenant, Tenant.id == UserTenantMembership.tenant_id)
                 .where(
                     UserTenantMembership.user_id == user_id,
-                    UserTenantMembership.status == MembershipStatus.active,
+                    UserTenantMembership.status.in_(
+                        [MembershipStatus.active, MembershipStatus.invited]
+                    ),
                 )
             )
             return [
