@@ -23,9 +23,8 @@ from app.api import router as api_router
 from app.config import settings
 from app.db import dispose_engine, ping
 from app.routes import router as routes_router
-from app.webhooks import router as webhooks_router
 from app.routes import users as users_routes
-app.include_router(users_routes.router)
+from app.webhooks import router as webhooks_router
 
 logging.basicConfig(
     level=settings.log_level,
@@ -102,6 +101,7 @@ def create_app() -> FastAPI:
     app.include_router(webhooks_router)
     app.include_router(api_router)
     app.include_router(routes_router)
+    app.include_router(users_routes.router)
 
     return app
 
