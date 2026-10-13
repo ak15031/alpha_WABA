@@ -2,11 +2,8 @@
 
   GET /me        — the authenticated user + their tenant memberships
   GET /tenants   — platform admin only, list every tenant
-  GET /branches  — list branches for the active tenant
 """
 from __future__ import annotations
-
-import uuid
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -16,15 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import (
     CurrentUser,
     PlatformIdentity,
-    TenantContext,
-    get_active_tenant_context,
     get_current_user,
     get_platform_admin_session,
-    get_tenant_scoped_session,
     get_user_memberships,
     require_platform_admin,
 )
-from app.models import Branch, Tenant
+from app.models import Tenant
 
 router = APIRouter(tags=["auth"])
 
@@ -57,16 +51,6 @@ class TenantResponse(BaseModel):
 
 class TenantsListResponse(BaseModel):
     data: list[TenantResponse]
-
-
-class BranchResponse(BaseModel):
-    id: str
-    name: str
-    branch_type: str
-
-
-class BranchesListResponse(BaseModel):
-    data: list[BranchResponse]
 
 
 # ---------------------------------------------------------------------------
@@ -116,32 +100,5 @@ async def list_all_tenants(
                 created_at=t.created_at.isoformat(),
             )
             for t in result.scalars().all()
-        ]
-    )
-
-
-# ---------------------------------------------------------------------------
-# GET /branches
-# ---------------------------------------------------------------------------
-
-
-@router.get("/branches", response_model=BranchesListResponse)
-async def list_branches(
-    _: TenantContext = Depends(get_active_tenant_context),
-    session: AsyncSession = Depends(get_tenant_scoped_session),
-) -> BranchesListResponse:
-    """Branches belonging to the active tenant.
-
-    Feeds every 'filter by branch' dropdown in the UI.
-    """
-    result = await session.execute(select(Branch).order_by(Branch.name))
-    return BranchesListResponse(
-        data=[
-            BranchResponse(
-                id=str(b.id),
-                name=b.name,
-                branch_type=b.branch_type.value,
-            )
-            for b in result.scalars().all()
         ]
     )

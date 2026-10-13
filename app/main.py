@@ -23,6 +23,7 @@ from app.api import router as api_router
 from app.config import settings
 from app.db import dispose_engine, ping
 from app.routes import router as routes_router
+from app.routes import plateform as platform_routes
 from app.routes import users as users_routes
 from app.webhooks import router as webhooks_router
 
@@ -102,6 +103,7 @@ def create_app() -> FastAPI:
     app.include_router(api_router)
     app.include_router(routes_router)
     app.include_router(users_routes.router)
+    app.include_router(platform_routes.router)
 
     return app
 
