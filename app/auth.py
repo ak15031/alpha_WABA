@@ -42,7 +42,7 @@ from typing import Any, AsyncGenerator, Protocol
 import jwt
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import or_, select, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -383,10 +383,6 @@ async def get_active_tenant_context(
                 select(UserTenantMembership).where(
                     UserTenantMembership.user_id == current_user.id,
                     UserTenantMembership.tenant_id == tenant_id,
-                    or_(
-                        UserTenantMembership.status == MembershipStatus.active,
-                        UserTenantMembership.status == MembershipStatus.invited,
-                    ),
                 )
             )
 

@@ -3,14 +3,14 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 import re
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import (
     CurrentUser, TenantContext,
     get_active_tenant_context, get_current_user, get_tenant_scoped_session,
 )
-from app.models import UserTenantMembership, MembershipStatus, UserRole
+from app.models import UserTenantMembership, MembershipStatus, UserRole, User
 from app.supabase_admin import get_supabase_admin, SupabaseAdminError
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -67,22 +67,29 @@ class RoleUpdate(BaseModel):
 @router.get("", response_model=list[UserRow])
 async def list_users(
     _: CurrentUser = Depends(require_tenant_admin),
+    ctx: TenantContext = Depends(get_active_tenant_context),
     session: AsyncSession = Depends(get_tenant_scoped_session),
 ) -> list[UserRow]:
-    rows = (await session.execute(
-        select(UserTenantMembership).order_by(UserTenantMembership.created_at.desc())
-    )).scalars().all()
+    await session.execute(text("SELECT set_config('app.is_platform_admin', 'true', true)"))
+    stmt = (
+        select(UserTenantMembership, User.email)
+        .join(User, User.id == UserTenantMembership.user_id)
+        .where(UserTenantMembership.tenant_id == ctx.tenant_id)
+        .order_by(UserTenantMembership.created_at.desc())
+    )
+    rows = (await session.execute(stmt)).all()
+    await session.execute(text("SELECT set_config('app.is_platform_admin', 'false', true)"))
     return [
         UserRow(
-            id=str(r.id),
-            user_id=str(r.user_id),
-            email=r.email or "",
-            role=r.role.value,
-            status=r.status.value,
-            invited_at=r.invited_at.isoformat() if r.invited_at else None,
-            accepted_at=r.accepted_at.isoformat() if r.accepted_at else None,
+            id=str(m.id),
+            user_id=str(m.user_id),
+            email=email or "",
+            role=m.role.value,
+            status=m.status.value,
+            invited_at=None,
+            accepted_at=None,
         )
-        for r in rows
+        for m, email in rows
     ]
 
 
@@ -93,10 +100,17 @@ async def invite_user(
     ctx: TenantContext = Depends(get_active_tenant_context),
     session: AsyncSession = Depends(get_tenant_scoped_session),
 ) -> dict:
-    # Reject duplicate invite within same tenant
+    # User rows are RLS-protected; elevate briefly for the email join.
+    await session.execute(text("SELECT set_config('app.is_platform_admin', 'true', true)"))
     existing = await session.scalar(
-        select(UserTenantMembership).where(UserTenantMembership.email == body.email)
+        select(UserTenantMembership)
+        .join(User, User.id == UserTenantMembership.user_id)
+        .where(
+            User.email == body.email,
+            UserTenantMembership.tenant_id == ctx.tenant_id,
+        )
     )
+    await session.execute(text("SELECT set_config('app.is_platform_admin', 'false', true)"))
     if existing:
         raise HTTPException(
             status_code=409,
@@ -120,13 +134,26 @@ async def invite_user(
     if not supabase_user_id:
         raise HTTPException(status_code=502, detail="Supabase did not return a user id")
 
+    supabase_uuid = uuid.UUID(supabase_user_id)
+    await session.execute(text("SELECT set_config('app.is_platform_admin', 'true', true)"))
+    user_row = await session.scalar(
+        select(User).where(User.supabase_user_id == supabase_uuid)
+    )
+    if user_row is None:
+        user_row = User(
+            supabase_user_id=supabase_uuid,
+            email=body.email,
+            full_name=None,
+        )
+        session.add(user_row)
+        await session.flush()
+    await session.execute(text("SELECT set_config('app.is_platform_admin', 'false', true)"))
+
     membership = UserTenantMembership(
         tenant_id=ctx.tenant_id,
-        user_id=uuid.UUID(supabase_user_id),
-        email=body.email,
+        user_id=user_row.id,
         role=UserRole(body.role),
         status=MembershipStatus.invited,
-        invited_at=datetime.utcnow(),
     )
     session.add(membership)
     await session.flush()
