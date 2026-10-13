@@ -2532,6 +2532,7 @@ function BroadcastsScreen() {
 }
 
 function UsersScreen() {
+  const { session, activeTenantId } = useAuth();
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [showInvite, setShowInvite] = useState(false);
@@ -2541,9 +2542,10 @@ function UsersScreen() {
   const toast = useToast();
 
   async function refresh() {
+    if (!session?.access_token || !activeTenantId) return;
     setLoading(true);
     try {
-      setUsers(await listUsers());
+      setUsers(await listUsers(session.access_token, activeTenantId));
     } catch (e: any) {
       toast.push({ variant: 'error', message: e.message || 'Load failed' });
     } finally {
@@ -2551,13 +2553,13 @@ function UsersScreen() {
     }
   }
 
-  useEffect(() => { void refresh(); }, []);
+  useEffect(() => { void refresh(); }, [session?.access_token, activeTenantId]);
 
   async function doInvite() {
-    if (!inviteEmail.trim()) return;
+    if (!inviteEmail.trim() || !session?.access_token || !activeTenantId) return;
     setBusy(true);
     try {
-      await inviteUser(inviteEmail.trim(), inviteRole);
+      await inviteUser(session.access_token, activeTenantId, inviteEmail.trim(), inviteRole);
       toast.push({ variant: 'success', message: `Invite sent to ${inviteEmail}` });
       setShowInvite(false);
       setInviteEmail('');
@@ -2570,8 +2572,9 @@ function UsersScreen() {
   }
 
   async function doRoleChange(id: string, role: 'tenant_admin' | 'tenant_user') {
+    if (!session?.access_token || !activeTenantId) return;
     try {
-      await updateUserRole(id, role);
+      await updateUserRole(session.access_token, activeTenantId, id, role);
       await refresh();
     } catch (e: any) {
       toast.push({ variant: 'error', message: e.message || 'Role update failed' });
@@ -2579,9 +2582,10 @@ function UsersScreen() {
   }
 
   async function doRemove(id: string, email: string) {
+    if (!session?.access_token || !activeTenantId) return;
     if (!confirm(`Suspend ${email}?`)) return;
     try {
-      await removeUser(id);
+      await removeUser(session.access_token, activeTenantId, id);
       await refresh();
     } catch (e: any) {
       toast.push({ variant: 'error', message: e.message || 'Remove failed' });

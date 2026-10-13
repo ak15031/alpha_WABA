@@ -42,7 +42,7 @@ from typing import Any, AsyncGenerator, Protocol
 import jwt
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -296,6 +296,33 @@ async def get_current_user(
 
 
 # ---------------------------------------------------------------------------
+# Helper: activate invited membership on first authenticated hit
+# ---------------------------------------------------------------------------
+
+
+async def _activate_membership_if_needed(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> None:
+    """Flip a membership from invited to active when a user first authenticates."""
+    membership = await session.scalar(
+        select(UserTenantMembership).where(
+            UserTenantMembership.user_id == user_id,
+            UserTenantMembership.tenant_id == tenant_id,
+        )
+    )
+    if membership is None or membership.status != MembershipStatus.invited:
+        return
+
+    membership.status = MembershipStatus.active
+    if hasattr(membership, "accepted_at"):
+        from datetime import datetime
+
+        membership.accepted_at = datetime.utcnow()
+
+
+# ---------------------------------------------------------------------------
 # Dependency: get_active_tenant_context
 # ---------------------------------------------------------------------------
 
@@ -356,6 +383,10 @@ async def get_active_tenant_context(
                 select(UserTenantMembership).where(
                     UserTenantMembership.user_id == current_user.id,
                     UserTenantMembership.tenant_id == tenant_id,
+                    or_(
+                        UserTenantMembership.status == MembershipStatus.active,
+                        UserTenantMembership.status == MembershipStatus.invited,
+                    ),
                 )
             )
 
@@ -380,18 +411,10 @@ async def get_active_tenant_context(
             if membership is None:
                 raise HTTPException(status_code=404, detail="No membership in this tenant")
 
-            # First-login activation flip: invited members can enter the tenant once
-            # they have actually authenticated, but they still need to be activated.
-            if membership.status == MembershipStatus.invited:
-                from datetime import datetime
-
-                membership.status = MembershipStatus.active
-                if hasattr(membership, "accepted_at"):
-                    membership.accepted_at = datetime.utcnow()
-                try:
-                    await session.flush()
-                except Exception:
-                    logger.exception("activate membership flush failed; continuing")
+            try:
+                await _activate_membership_if_needed(session, current_user.id, tenant_id)
+            except Exception:
+                logger.exception("activate_membership hook failed; continuing")
 
             if membership.status == MembershipStatus.suspended:
                 raise HTTPException(
