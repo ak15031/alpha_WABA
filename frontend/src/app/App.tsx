@@ -772,21 +772,27 @@ function Sidebar({
               <ChevronDown size={12} className={`flex-shrink-0 transition-transform ${tenantOpen ? "rotate-180" : ""}`} style={{ color: "rgba(255,255,255,0.35)" }} />
             </button>
 
-            {tenantOpen && otherMemberships.length > 0 && (
+            {tenantOpen && (
               <div className="absolute left-0 right-0 top-full mt-1 rounded-md overflow-hidden z-50 shadow-xl" style={{ background: "#1E293B", border: "1px solid rgba(255,255,255,0.08)" }}>
-                {otherMemberships.map((m) => (
-                  <button
-                    key={m.tenant_id}
-                    onClick={() => { setActiveTenantId(m.tenant_id); setTenantOpen(false); }}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs transition-colors hover:bg-white/5"
-                    style={{ color: "rgba(255,255,255,0.55)" }}
-                  >
-                    <div className="w-5 h-5 rounded flex items-center justify-center text-white text-[9px] font-bold flex-shrink-0" style={{ background: "#7C3AED" }}>
-                      {m.tenant_name[0]}
-                    </div>
-                    {m.tenant_name}
-                  </button>
-                ))}
+                {otherMemberships.length === 0 ? (
+                  <div className="px-3 py-2 text-[11px]" style={{ color: "rgba(255,255,255,0.4)" }}>
+                    No other tenants to switch to.
+                  </div>
+                ) : (
+                  otherMemberships.map((m) => (
+                    <button
+                      key={m.tenant_id}
+                      onClick={() => { setActiveTenantId(m.tenant_id); setTenantOpen(false); }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs transition-colors hover:bg-white/5"
+                      style={{ color: "rgba(255,255,255,0.55)" }}
+                    >
+                      <div className="w-5 h-5 rounded flex items-center justify-center text-white text-[9px] font-bold flex-shrink-0" style={{ background: "#7C3AED" }}>
+                        {m.tenant_name[0]}
+                      </div>
+                      {m.tenant_name}
+                    </button>
+                  ))
+                )}
                 {me?.is_platform_admin && (
                   <button
                     type="button"
@@ -803,13 +809,6 @@ function Sidebar({
                     <span>Add new tenant</span>
                   </button>
                 )}
-              </div>
-            )}
-            {tenantOpen && otherMemberships.length === 0 && (
-              <div className="absolute left-0 right-0 top-full mt-1 rounded-md overflow-hidden z-50 shadow-xl" style={{ background: "#1E293B", border: "1px solid rgba(255,255,255,0.08)" }}>
-                <div className="px-3 py-2 text-[11px]" style={{ color: "rgba(255,255,255,0.4)" }}>
-                  No other tenants to switch to.
-                </div>
               </div>
             )}
           </div>
