@@ -128,7 +128,7 @@ async def create_tenant(
     await session.flush()
 
     # 2. WABA
-    waba_type = WabaType.byoa if body.waba_access_token else WabaType.shared
+    waba_type = WabaType.byow if body.waba_access_token else WabaType.shared_platform
     # Reject duplicate meta_waba_id (unique constraint would raise, but let's 409 cleanly)
     dup = await session.scalar(select(Waba.id).where(Waba.meta_waba_id == body.meta_waba_id))
     if dup is not None:

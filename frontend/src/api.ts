@@ -88,7 +88,45 @@ export interface Me {
 export interface Branch {
   id: string;
   name: string;
-  branch_type: string;
+  branch_type: "physical" | "virtual" | string;
+  status?: "active" | "archived";
+}
+
+export interface PhoneNumberIn {
+  display_phone_number: string;
+  meta_phone_number_id: string;
+  is_test_number?: boolean;
+}
+
+export interface BranchIn {
+  name: string;
+  branch_type?: "physical" | "virtual";
+}
+
+export interface TenantCreatePayload {
+  tenant_name: string;
+  admin_email: string;
+  admin_role?: "tenant_admin";
+  meta_waba_id: string;
+  business_name: string;
+  waba_access_token?: string | null;
+  phone_numbers: PhoneNumberIn[];
+  branches?: BranchIn[];
+}
+
+export interface TenantCreateResponse {
+  tenant_id: string;
+  tenant_slug: string;
+  waba_id: string;
+  phone_number_ids: string[];
+  branch_ids: string[];
+  admin_user_id: string;
+  admin_email: string;
+  invite_status: string;
+}
+
+export interface BranchFull extends Branch {
+  status: "active" | "archived";
 }
 
 export interface KpiCard {
@@ -477,6 +515,48 @@ export async function syncTemplatesFromMeta(token: string, tenantId: string): Pr
   }
 
   return res.json();
+}
+
+export async function createTenant(
+  token: string,
+  payload: TenantCreatePayload,
+): Promise<TenantCreateResponse> {
+  const res = await apiFetch('/platform/tenants', {
+    method: 'POST',
+    token,
+    body: payload,
+  });
+  if (!res.ok) {
+    const b = await res.json().catch(() => ({}));
+    const bb = b as { error_message?: string; detail?: string };
+    throw new ApiError(res.status, bb.error_message || bb.detail || 'Create tenant failed', b);
+  }
+  return res.json();
+}
+
+export async function createBranch(
+  token: string,
+  tenantId: string,
+  payload: { name: string; branch_type?: 'physical' | 'virtual' },
+): Promise<BranchFull> {
+  const res = await apiFetch('/branches', { method: 'POST', token, tenantId, body: payload });
+  if (!res.ok) {
+    const b = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, (b as any).detail || 'Create branch failed');
+  }
+  return res.json();
+}
+
+export async function deleteBranch(
+  token: string,
+  tenantId: string,
+  branchId: string,
+): Promise<void> {
+  const res = await apiFetch(`/branches/${branchId}`, { method: 'DELETE', token, tenantId });
+  if (!res.ok && res.status !== 204) {
+    const b = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, (b as any).detail || 'Delete branch failed');
+  }
 }
 
 export function parsePastedContacts(text: string): InlineContact[] {

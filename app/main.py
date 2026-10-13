@@ -23,7 +23,7 @@ from app.api import router as api_router
 from app.config import settings
 from app.db import dispose_engine, ping
 from app.routes import router as routes_router
-from app.routes import plateform as platform_routes
+from app.routes import platform as platform_routes
 from app.routes import users as users_routes
 from app.webhooks import router as webhooks_router
 

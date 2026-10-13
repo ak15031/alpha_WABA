@@ -34,6 +34,7 @@ import {
   useUploadToGroup,
   useMessages,
 } from "./hooks";
+import { createBranch, createTenant, deleteBranch, type TenantCreatePayload } from "../api";
 import type {
   CampaignStatusCounts,
   ContactRow,
@@ -786,6 +787,22 @@ function Sidebar({
                     {m.tenant_name}
                   </button>
                 ))}
+                {me?.is_platform_admin && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTenantOpen(false);
+                      onNavigate('platform-create-tenant');
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs border-t border-white/10 hover:bg-white/5"
+                    style={{ color: "rgba(255,255,255,0.75)" }}
+                  >
+                    <div className="w-5 h-5 rounded flex items-center justify-center text-white text-[11px] font-bold flex-shrink-0" style={{ background: "#059669" }}>
+                      +
+                    </div>
+                    <span>Add new tenant</span>
+                  </button>
+                )}
               </div>
             )}
             {tenantOpen && otherMemberships.length === 0 && (
@@ -2531,6 +2548,295 @@ function BroadcastsScreen() {
   );
 }
 
+function PlatformCreateTenantScreen({ onDone }: { onDone: () => void }) {
+  const { session, me, setActiveTenantId } = useAuth();
+  const toast = useToast();
+
+  const [tenantName, setTenantName] = useState('');
+  const [adminEmail, setAdminEmail] = useState('');
+  const [metaWabaId, setMetaWabaId] = useState('');
+  const [businessName, setBusinessName] = useState('');
+  const [useOwnToken, setUseOwnToken] = useState(false);
+  const [accessToken, setAccessToken] = useState('');
+
+  type PhoneRow = { meta_phone_number_id: string; display_phone_number: string; is_test_number: boolean };
+  const [phones, setPhones] = useState<PhoneRow[]>([
+    { meta_phone_number_id: '', display_phone_number: '', is_test_number: false },
+  ]);
+
+  type BranchDraft = { name: string; branch_type: 'physical' | 'virtual' };
+  const [branches, setBranches] = useState<BranchDraft[]>([{ name: 'Main Office', branch_type: 'physical' }]);
+
+  const [busy, setBusy] = useState(false);
+
+  if (!me?.is_platform_admin) {
+    return <div className="p-6">Platform admin only.</div>;
+  }
+
+  const canSubmit = Boolean(
+    tenantName.trim() && adminEmail.trim() && metaWabaId.trim() && businessName.trim()
+    && phones.length > 0 && phones.every(p => p.meta_phone_number_id.trim() && p.display_phone_number.trim())
+    && (!useOwnToken || accessToken.trim())
+  );
+
+  async function submit() {
+    if (!session || !canSubmit) return;
+    setBusy(true);
+    try {
+      const payload: TenantCreatePayload = {
+        tenant_name: tenantName.trim(),
+        admin_email: adminEmail.trim().toLowerCase(),
+        meta_waba_id: metaWabaId.trim(),
+        business_name: businessName.trim(),
+        waba_access_token: useOwnToken ? accessToken.trim() : null,
+        phone_numbers: phones.map(p => ({
+          meta_phone_number_id: p.meta_phone_number_id.trim(),
+          display_phone_number: p.display_phone_number.trim(),
+          is_test_number: p.is_test_number,
+        })),
+        branches: branches.filter(b => b.name.trim()).map(b => ({
+          name: b.name.trim(), branch_type: b.branch_type,
+        })),
+      };
+      const res = await createTenant(session.access_token, payload);
+      toast.push({
+        variant: res.invite_status === 'sent' ? 'success' : 'warning' as any,
+        message: `Tenant created. Invite ${res.invite_status === 'sent' ? 'sent' : 'FAILED (' + res.invite_status + ')'}.`,
+      });
+      setActiveTenantId(res.tenant_id);
+      onDone();
+    } catch (e: any) {
+      toast.push({ variant: 'error', message: e.message || 'Create tenant failed' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="p-6 max-w-3xl mx-auto space-y-6">
+      <h1 className="text-2xl font-semibold">Onboard a new tenant</h1>
+
+      <section className="bg-white border rounded p-4 space-y-3">
+        <h2 className="font-medium">Tenant</h2>
+        <input className="w-full border rounded p-2" placeholder="Tenant name (e.g. Alpha Education)"
+               value={tenantName} onChange={e => setTenantName(e.target.value)} />
+      </section>
+
+      <section className="bg-white border rounded p-4 space-y-3">
+        <h2 className="font-medium">First admin</h2>
+        <input type="email" className="w-full border rounded p-2"
+               placeholder="admin@customer.com"
+               value={adminEmail} onChange={e => setAdminEmail(e.target.value)} />
+        <p className="text-xs text-gray-500">An invite email will be sent. They set a password and land as tenant_admin.</p>
+      </section>
+
+      <section className="bg-white border rounded p-4 space-y-3">
+        <h2 className="font-medium">WhatsApp Business Account</h2>
+        <input className="w-full border rounded p-2" placeholder="meta_waba_id"
+               value={metaWabaId} onChange={e => setMetaWabaId(e.target.value)} />
+        <input className="w-full border rounded p-2" placeholder="Business name shown in WhatsApp"
+               value={businessName} onChange={e => setBusinessName(e.target.value)} />
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={useOwnToken} onChange={e => setUseOwnToken(e.target.checked)} />
+          Customer brings their own access token (BYOW)
+        </label>
+        {useOwnToken && (
+          <input type="password" className="w-full border rounded p-2 font-mono"
+                 placeholder="WABA access token"
+                 value={accessToken} onChange={e => setAccessToken(e.target.value)} />
+        )}
+      </section>
+
+      <section className="bg-white border rounded p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="font-medium">Phone numbers</h2>
+          <button type="button"
+                  onClick={() => setPhones([...phones, { meta_phone_number_id: '', display_phone_number: '', is_test_number: false }])}
+                  className="text-sm text-blue-600 hover:underline">
+            + Add phone
+          </button>
+        </div>
+        {phones.map((p, i) => (
+          <div key={i} className="grid grid-cols-12 gap-2 items-center">
+            <input className="col-span-5 border rounded p-2" placeholder="+923001234567"
+                   value={p.display_phone_number}
+                   onChange={e => setPhones(phones.map((x, j) => j === i ? { ...x, display_phone_number: e.target.value } : x))} />
+            <input className="col-span-5 border rounded p-2 font-mono text-xs" placeholder="meta_phone_number_id"
+                   value={p.meta_phone_number_id}
+                   onChange={e => setPhones(phones.map((x, j) => j === i ? { ...x, meta_phone_number_id: e.target.value } : x))} />
+            <label className="col-span-1 flex items-center gap-1 text-xs">
+              <input type="checkbox" checked={p.is_test_number}
+                     onChange={e => setPhones(phones.map((x, j) => j === i ? { ...x, is_test_number: e.target.checked } : x))} />
+              Test
+            </label>
+            <button type="button" disabled={phones.length === 1}
+                    onClick={() => setPhones(phones.filter((_, j) => j !== i))}
+                    className="col-span-1 text-red-600 text-sm disabled:text-gray-300">✕</button>
+          </div>
+        ))}
+      </section>
+
+      <section className="bg-white border rounded p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="font-medium">Branches (optional, admin can add later)</h2>
+          <button type="button"
+                  onClick={() => setBranches([...branches, { name: '', branch_type: 'physical' }])}
+                  className="text-sm text-blue-600 hover:underline">
+            + Add branch
+          </button>
+        </div>
+        {branches.map((b, i) => (
+          <div key={i} className="grid grid-cols-12 gap-2">
+            <input className="col-span-9 border rounded p-2" placeholder="Branch name"
+                   value={b.name}
+                   onChange={e => setBranches(branches.map((x, j) => j === i ? { ...x, name: e.target.value } : x))} />
+            <select className="col-span-2 border rounded p-2"
+                    value={b.branch_type}
+                    onChange={e => setBranches(branches.map((x, j) => j === i ? { ...x, branch_type: e.target.value as 'physical' | 'virtual' } : x))}>
+              <option value="physical">Physical</option>
+              <option value="virtual">Virtual</option>
+            </select>
+            <button type="button"
+                    onClick={() => setBranches(branches.filter((_, j) => j !== i))}
+                    className="col-span-1 text-red-600 text-sm">✕</button>
+          </div>
+        ))}
+      </section>
+
+      <div className="flex items-center justify-end gap-2 pt-2">
+        <button onClick={onDone} className="px-4 py-2 border rounded">Cancel</button>
+        <button onClick={submit} disabled={!canSubmit || busy}
+                className="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-50">
+          {busy ? 'Provisioning…' : 'Create tenant & send invite'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function BranchesScreen() {
+  const { session, activeTenantId, activeMembership } = useAuth();
+  const { branches, loading, error } = useBranches();
+  const toast = useToast();
+  const [showAdd, setShowAdd] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newType, setNewType] = useState<'physical' | 'virtual'>('physical');
+  const [busy, setBusy] = useState(false);
+
+  const isAdmin = activeMembership?.role === 'tenant_admin';
+  const activeCount = branches.filter((b) => b.status !== 'archived').length;
+
+  async function refresh() {
+    window.location.reload();
+  }
+
+  async function doAdd() {
+    if (!session || !activeTenantId || !newName.trim()) return;
+    setBusy(true);
+    try {
+      await createBranch(session.access_token, activeTenantId, { name: newName.trim(), branch_type: newType });
+      toast.push({ variant: 'success', message: 'Branch added' });
+      setShowAdd(false);
+      setNewName('');
+      await refresh();
+    } catch (e: any) {
+      toast.push({ variant: 'error', message: e.message || 'Add branch failed' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doDelete(id: string, name: string) {
+    if (!session || !activeTenantId) return;
+    if (activeCount <= 1) {
+      toast.push({ variant: 'error', message: 'Cannot delete the last active branch.' });
+      return;
+    }
+    if (!confirm(`Archive branch "${name}"?`)) return;
+    try {
+      await deleteBranch(session.access_token, activeTenantId, id);
+      toast.push({ variant: 'success', message: 'Branch archived' });
+      await refresh();
+    } catch (e: any) {
+      toast.push({ variant: 'error', message: e.message || 'Archive failed' });
+    }
+  }
+
+  return (
+    <div className="p-6 max-w-2xl mx-auto">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xl font-semibold">Branches</h2>
+        {isAdmin && (
+          <button onClick={() => setShowAdd(true)}
+                  className="px-3 py-2 bg-blue-600 text-white rounded text-sm">
+            + Add branch
+          </button>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="text-sm text-gray-500">Loading…</div>
+      ) : (
+        <table className="w-full border rounded bg-white">
+          <thead className="bg-gray-50 text-left text-sm">
+            <tr>
+              <th className="p-2">Name</th><th className="p-2">Type</th>
+              <th className="p-2">Status</th><th className="p-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {branches.map((b) => (
+              <tr key={b.id} className="border-t text-sm">
+                <td className="p-2">{b.name}</td>
+                <td className="p-2">{b.branch_type}</td>
+                <td className="p-2">
+                  <span className={`px-2 py-0.5 rounded text-xs ${
+                    b.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-200 text-gray-600'
+                  }`}>{b.status || 'active'}</span>
+                </td>
+                <td className="p-2 text-right">
+                  {isAdmin && (
+                    <button onClick={() => doDelete(b.id, b.name)}
+                            disabled={activeCount <= 1}
+                            className="text-red-600 text-xs hover:underline disabled:text-gray-300">
+                      Archive
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {error && <div className="text-red-600 text-sm mt-3">{error}</div>}
+
+      {showAdd && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
+          <div className="bg-white p-6 rounded shadow-lg w-96 space-y-3">
+            <h3 className="font-semibold">Add a branch</h3>
+            <input className="w-full border rounded p-2"
+                   placeholder="Branch name"
+                   value={newName} onChange={e => setNewName(e.target.value)} />
+            <select className="w-full border rounded p-2"
+                    value={newType} onChange={e => setNewType(e.target.value as 'physical' | 'virtual')}>
+              <option value="physical">Physical</option>
+              <option value="virtual">Virtual</option>
+            </select>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowAdd(false)} className="px-3 py-1 border rounded">Cancel</button>
+              <button onClick={doAdd} disabled={busy || !newName.trim()}
+                      className="px-3 py-1 bg-blue-600 text-white rounded disabled:opacity-50">
+                {busy ? 'Adding…' : 'Add'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function UsersScreen() {
   const { session, activeTenantId } = useAuth();
   const [users, setUsers] = useState<UserRow[]>([]);
@@ -3010,7 +3316,7 @@ export default function App() {
   }
 
   // Map screen names to URL paths and back — keeps refresh/back-button sane.
-const VALID_SCREENS = ["dashboard", "contacts", "campaign", "templates", "logs", "users"] as const;
+const VALID_SCREENS = ["dashboard", "contacts", "campaign", "templates", "logs", "users", "platform-create-tenant"] as const;
 type ScreenName = typeof VALID_SCREENS[number];
 
 function screenFromPath(): ScreenName {
@@ -3048,6 +3354,7 @@ useEffect(() => {
     else if (id === "logs") setScreen("logs");
     else if (id === "templates") setScreen("templates");
     else if (id === "users") setScreen("users");
+    else if (id === "platform-create-tenant") setScreen("platform-create-tenant");
     else setScreen("dashboard");
   };
 
@@ -3057,6 +3364,7 @@ useEffect(() => {
     screen === "logs" ? "logs" :
     screen === "templates" ? "templates" :
     screen === "users" ? "users" :
+    screen === "platform-create-tenant" ? "platform-create-tenant" :
     "dashboard";
 
 
@@ -3090,6 +3398,7 @@ useEffect(() => {
           {screen === "logs"      && <MessagesScreen />}
           {screen === "templates" && <TemplatesScreen />}
           {screen === "users"     && <UsersScreen />}
+          {screen === "platform-create-tenant" && <PlatformCreateTenantScreen onDone={() => setScreen("dashboard")} />}
 
         </main>
       </div>
