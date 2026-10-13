@@ -11,8 +11,8 @@ CSV rules (per PM):
     (matched by branch name; ignored if not found).
   - Encoding: UTF-8 only. Non-UTF-8 → 400.
   - Row cap: 10,000.
-  - Phone validation: E.164 (starts with `+`, followed by 1-15 digits).
-    We strip spaces, dashes, and parens before validating.
+  - Phone validation: normalize phone numbers to E.164, using Pakistan's
+    +92 country code for local numbers without a country code.
   - Duplicates (same phone, within the same upload OR already in DB): first
     occurrence wins; subsequent flagged as duplicate in the error report but
     NOT inserted.
@@ -55,9 +55,6 @@ _PHONE_ALIASES = {"phone", "phone_number", "phonenumber", "mobile", "whatsapp", 
 _NAME_ALIASES = {"name", "full_name", "fullname", "contact_name"}
 _SEGMENT_ALIASES = {"segment", "category", "group", "tag"}
 _BRANCH_ALIASES = {"branch", "branch_name", "office"}
-
-_E164_RE = re.compile(r"^\+[1-9]\d{1,14}$")
-
 
 # ---------------------------------------------------------------------------
 # Response models
@@ -114,10 +111,32 @@ class CountResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _normalize_phone(raw: str) -> str:
-    """Strip whitespace/dashes/parens. Returns the cleaned string
-    (may or may not be valid E.164 — caller validates)."""
-    return re.sub(r"[\s\-\(\)]", "", raw or "").strip()
+def normalize_phone(raw: str | None) -> str | None:
+    """Return an E.164 phone string, using Pakistan's country code by default."""
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    if not value:
+        return None
+
+    has_plus = value.startswith("+")
+    digits = re.sub(r"\D", "", value)
+    if not digits:
+        return None
+
+    if has_plus:
+        candidate = "+" + digits
+    elif digits.startswith("0"):
+        candidate = "+92" + digits[1:]
+    elif digits.startswith("92"):
+        candidate = "+" + digits
+    else:
+        candidate = "+" + digits
+
+    body = candidate[1:]
+    if len(body) < 10 or len(body) > 15:
+        return None
+    return candidate
 
 
 def _find_column(headers: list[str], aliases: set[str]) -> str | None:
@@ -182,25 +201,22 @@ async def _parse_csv(
             skipped_empty += 1
             continue
 
-        phone_raw = (raw_row.get(phone_col) or "").strip()
-        phone_clean = _normalize_phone(phone_raw)
+        raw_value = raw_row.get(phone_col)
+        phone_raw = (raw_value or "").strip()
+        phone = normalize_phone(raw_value)
 
-        if not phone_clean:
-            errors.append(UploadError(row=i, phone_raw=phone_raw, reason="missing_phone"))
-            continue
-
-        if not _E164_RE.match(phone_clean):
+        if not phone:
             errors.append(UploadError(row=i, phone_raw=phone_raw, reason="invalid_e164"))
             continue
 
-        if phone_clean in seen_phones:
+        if phone in seen_phones:
             errors.append(
                 UploadError(row=i, phone_raw=phone_raw, reason="duplicate_in_upload")
             )
             continue
-        seen_phones.add(phone_clean)
+        seen_phones.add(phone)
 
-        row: dict[str, Any] = {"row": i, "phone_e164": phone_clean}
+        row: dict[str, Any] = {"row": i, "phone_e164": phone}
         if column_map["full_name"]:
             v = (raw_row.get(column_map["full_name"]) or "").strip()
             row["full_name"] = v or None
@@ -506,4 +522,3 @@ async def archive_contact(
 
     contact.is_archived = True
     await session.flush()
-
