@@ -13,9 +13,9 @@ CSV rules (per PM):
   - Row cap: 10,000.
   - Phone validation: normalize phone numbers to E.164, using Pakistan's
     +92 country code for local numbers without a country code.
-  - Duplicates (same phone, within the same upload OR already in DB): first
-    occurrence wins; subsequent flagged as duplicate in the error report but
-    NOT inserted.
+  - Duplicates within the upload: first occurrence wins; subsequent rows are
+    flagged as duplicates. Active contacts already in the DB are also flagged;
+    archived contacts are reactivated.
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ import csv
 import io
 import re
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
@@ -313,14 +314,33 @@ async def upload_contacts(
     session.add(csv_import)
     await session.flush()
 
-    # Load existing phone set for this tenant so we don't insert dupes.
-    existing_result = await session.execute(select(Contact.phone_e164))
-    existing_phones = {p for (p,) in existing_result.all()}
+    # Load tenant contacts so archived records can be reactivated instead of duplicated.
+    existing_result = await session.execute(
+        select(Contact).where(Contact.tenant_id == ctx.tenant_id)
+    )
+    existing_contacts = {
+        contact.phone_e164: contact for contact in existing_result.scalars().all()
+    }
 
-    inserted = 0
+    valid = 0
     duplicate_in_db = 0
     for r in rows:
-        if r["phone_e164"] in existing_phones:
+        existing = existing_contacts.get(r["phone_e164"])
+        if existing is not None:
+            if existing.is_archived:
+                existing.is_archived = False
+                if r.get("full_name"):
+                    existing.full_name = r["full_name"]
+                existing.branch_id = branch_uuid
+                if r.get("segment"):
+                    existing.custom_fields = {
+                        **(existing.custom_fields or {}),
+                        "segment": r["segment"],
+                    }
+                existing.updated_at = datetime.now(timezone.utc)
+                valid += 1
+                continue
+
             duplicate_in_db += 1
             errors.append(
                 UploadError(
@@ -347,15 +367,20 @@ async def upload_contacts(
                 csv_import_id=csv_import.id,
             )
         )
-        existing_phones.add(r["phone_e164"])
-        inserted += 1
+        valid += 1
+
+    csv_import.valid_rows = valid
+    csv_import.invalid_rows = len(errors)
+    csv_import.error_report = (
+        {"errors": [e.model_dump() for e in errors]} if errors else None
+    )
 
     await session.flush()
 
     return UploadResponse(
         upload_id=str(csv_import.id),
         total_rows=len(rows) + len(errors) + skipped_empty - duplicate_in_db,
-        valid=inserted,
+        valid=valid,
         invalid=len(errors),
         skipped_empty=skipped_empty,
         preview_rows=preview,
