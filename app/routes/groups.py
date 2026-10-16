@@ -19,7 +19,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import (
@@ -395,4 +395,27 @@ async def remove_group_member(
         raise HTTPException(status_code=404, detail="Membership not found")
 
     await session.delete(member)
+    await session.flush()
+
+
+@router.delete("/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_group(
+    group_id: str,
+    _: TenantContext = Depends(get_active_tenant_context),
+    session: AsyncSession = Depends(get_tenant_scoped_session),
+) -> None:
+    """Hard delete a group. Memberships cascade; contacts are untouched."""
+    try:
+        group_uuid = uuid.UUID(group_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="group_id must be a UUID")
+
+    group = await session.get(ContactGroup, group_uuid)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    await session.execute(
+        delete(ContactGroupMember).where(ContactGroupMember.group_id == group_uuid)
+    )
+    await session.delete(group)
     await session.flush()

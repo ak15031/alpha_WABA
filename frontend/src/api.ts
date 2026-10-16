@@ -560,6 +560,40 @@ export async function deleteBranch(
   }
 }
 
+export async function deleteGroup(
+  token: string,
+  tenantId: string,
+  groupId: string,
+): Promise<void> {
+  const res = await apiFetch(`/groups/${groupId}`, {
+    method: "DELETE",
+    token,
+    tenantId,
+  });
+  if (!res.ok && res.status !== 204) {
+    const body = await res.json().catch(() => ({}));
+    const detail = (body as { detail?: string }).detail || "Delete group failed";
+    throw new ApiError(res.status, detail);
+  }
+}
+
+export async function deleteBroadcast(
+  token: string,
+  tenantId: string,
+  broadcastId: string,
+): Promise<void> {
+  const res = await apiFetch(`/broadcasts/${broadcastId}`, {
+    method: "DELETE",
+    token,
+    tenantId,
+  });
+  if (!res.ok && res.status !== 204) {
+    const body = await res.json().catch(() => ({}));
+    const detail = (body as { detail?: string }).detail || "Delete broadcast failed";
+    throw new ApiError(res.status, detail);
+  }
+}
+
 export function parsePastedContacts(text: string): InlineContact[] {
   const lines = text.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean);
   const out: InlineContact[] = [];

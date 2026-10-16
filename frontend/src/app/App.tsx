@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   LayoutDashboard, Users, Megaphone, FileText, BarChart2,
   Settings, LogOut, ChevronDown, Search, Filter, Plus,
@@ -34,7 +34,14 @@ import {
   useUploadToGroup,
   useMessages,
 } from "./hooks";
-import { createBranch, createTenant, deleteBranch, type TenantCreatePayload } from "../api";
+import {
+  createBranch,
+  createTenant,
+  deleteBranch,
+  deleteBroadcast,
+  deleteGroup,
+  type TenantCreatePayload,
+} from "../api";
 import type {
   CampaignStatusCounts,
   ContactRow,
@@ -818,6 +825,9 @@ function Sidebar({
           {[
             ...navItems,
             ...((me?.is_platform_admin || activeMembership?.role === "tenant_admin")
+              ? [{ id: "branches", label: "Branches", icon: Building2 }]
+              : []),
+            ...((me?.is_platform_admin || activeMembership?.role === "tenant_admin")
               ? [{ id: "users", label: "Users", icon: Users }]
               : []),
           ].map((item) => {
@@ -1338,6 +1348,7 @@ function GroupsPanel() {
   const { create, creating } = useCreateGroup();
   const { upload, uploading } = useUploadToGroup();
   const { branches } = useBranches();
+  const { session, activeTenantId, activeMembership } = useAuth();
   const toast = useToast();
 
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -1348,7 +1359,6 @@ function GroupsPanel() {
   const [uploadTargetGroup, setUploadTargetGroup] = useState<string | null>(null);
   const [uploadBranchId, setUploadBranchId] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [pendingUploadResult, setPendingUploadResult] = useState<{
     groupId: string;
     branchId: string;
@@ -1379,6 +1389,19 @@ function GroupsPanel() {
   const handleFileChosen = (e: React.ChangeEvent<HTMLInputElement>) => {
     setUploadFile(e.target.files?.[0] ?? null);
     e.target.value = "";
+  };
+
+  const handleDeleteGroup = async (groupId: string, name: string) => {
+    if (!session || !activeTenantId) return;
+    if (!confirm(`Delete group "${name}" and remove all its memberships? Contacts stay.`)) return;
+    try {
+      await deleteGroup(session.access_token, activeTenantId, groupId);
+      toast.push({ variant: "success", message: "Group deleted" });
+      await refresh();
+    } catch (err) {
+      const e = err as Error;
+      toast.push({ variant: "error", message: e.message || "Delete group failed" });
+    }
   };
 
   const handlePreviewUpload = async () => {
@@ -1463,7 +1486,7 @@ function GroupsPanel() {
             className="flex items-center justify-between px-4 py-3 rounded-lg"
             style={{ border: "1px solid #E2E8F0", background: "#fff" }}
           >
-            <div>
+            <div className="min-w-0">
               <div className="font-medium text-sm" style={{ color: "#0F172A" }}>{g.name}</div>
               {g.description && (
                 <div className="text-xs mt-0.5" style={{ color: "#64748B" }}>{g.description}</div>
@@ -1472,18 +1495,28 @@ function GroupsPanel() {
                 {g.member_count} member{g.member_count !== 1 ? "s" : ""}
               </div>
             </div>
-            <button
-              onClick={() => {
-                setUploadTargetGroup(g.id);
-                setUploadBranchId("");
-                setUploadFile(null);
-                setShowUploadDialog(true);
-              }}
-              className="text-xs px-3 py-1.5 rounded-md font-medium"
-              style={{ border: "1px solid #E2E8F0", color: "#334155" }}
-            >
-              Upload CSV
-            </button>
+            <div className="flex items-center gap-3 flex-shrink-0">
+              <button
+                onClick={() => {
+                  setUploadTargetGroup(g.id);
+                  setUploadBranchId("");
+                  setUploadFile(null);
+                  setShowUploadDialog(true);
+                }}
+                className="text-xs px-3 py-1.5 rounded-md font-medium"
+                style={{ border: "1px solid #E2E8F0", color: "#334155" }}
+              >
+                Upload CSV
+              </button>
+              {activeMembership?.role === "tenant_admin" && (
+                <button
+                  onClick={() => handleDeleteGroup(g.id, g.name)}
+                  className="text-red-600 text-xs hover:underline"
+                >
+                  Delete
+                </button>
+              )}
+            </div>
           </div>
         ))}
       </div>
@@ -1519,20 +1552,32 @@ function GroupsPanel() {
                 </p>
               )}
             </div>
-            <a
-              href="/samples/groups-sample.csv"
-              download
-              className="text-xs text-blue-600 hover:underline"
-            >
-              Download sample CSV
-            </a>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".csv,.txt"
-              onChange={handleFileChosen}
-              className="block w-full text-sm mt-3"
-            />
+            <div>
+              <label className="block text-sm font-semibold text-gray-900 mb-1">
+                CSV file <span className="text-red-500">*</span>
+              </label>
+              <label className="flex items-center gap-3 cursor-pointer border-2 border-dashed border-gray-300 rounded p-3 hover:border-blue-500 hover:bg-blue-50 transition">
+                <span className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded font-medium">
+                  Choose file
+                </span>
+                <span className="text-sm text-gray-700">
+                  {uploadFile ? uploadFile.name : "No file selected"}
+                </span>
+                <input
+                  type="file"
+                  accept=".csv,.txt"
+                  className="hidden"
+                  onChange={handleFileChosen}
+                />
+              </label>
+              <a
+                href="/samples/groups-sample.csv"
+                download
+                className="inline-block mt-2 text-xs text-blue-600 hover:underline"
+              >
+                Download sample CSV
+              </a>
+            </div>
             <div className="flex justify-end gap-2 mt-5">
               <button
                 onClick={() => {
@@ -1696,7 +1741,6 @@ function ContactsScreen() {
   } | null>(null);
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [showUploadDialog, setShowUploadDialog] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Live parse of pasted text for the preview counter
   const parsedPastes = useMemo(
@@ -2197,34 +2241,32 @@ function ContactsScreen() {
                     CSV with a <code>phone</code> column (also accepts <code>phone_number</code>, <code>mobile</code>, <code>contact</code>). Optional columns:{" "}
                     <code>name</code>, <code>segment</code>.
                   </p>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".csv,.txt"
-                    onChange={handleFileChosen}
-                    style={{ display: "none" }}
-                  />
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={uploading}
-                    className="w-full py-8 rounded-md text-sm font-medium flex flex-col items-center gap-2"
-                    style={{
-                      border: "2px dashed #CBD5E1",
-                      background: uploading ? "#F1F5F9" : "#F8FAFC",
-                      color: "#2563EB",
-                      cursor: uploading ? "wait" : "pointer",
-                    }}
-                  >
-                    <Upload size={24} />
-                    {uploadFile ? uploadFile.name : "Choose CSV file"}
-                  </button>
-                  <a
-                    href="/samples/contacts-sample.csv"
-                    download
-                    className="inline-block mt-2 text-xs text-blue-600 hover:underline"
-                  >
-                    Download sample CSV
-                  </a>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-900 mb-1">
+                      CSV file <span className="text-red-500">*</span>
+                    </label>
+                    <label className="flex items-center gap-3 cursor-pointer border-2 border-dashed border-gray-300 rounded p-3 hover:border-blue-500 hover:bg-blue-50 transition">
+                      <span className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded font-medium">
+                        Choose file
+                      </span>
+                      <span className="text-sm text-gray-700">
+                        {uploadFile ? uploadFile.name : "No file selected"}
+                      </span>
+                      <input
+                        type="file"
+                        accept=".csv,.txt"
+                        className="hidden"
+                        onChange={handleFileChosen}
+                      />
+                    </label>
+                    <a
+                      href="/samples/contacts-sample.csv"
+                      download
+                      className="inline-block mt-2 text-xs text-blue-600 hover:underline"
+                    >
+                      Download sample CSV
+                    </a>
+                  </div>
                 </div>
               )}
 
@@ -2550,10 +2592,24 @@ function ContactsScreen() {
 
 function BroadcastsScreen() {
   const [view, setView] = useState<"list" | "create">("list");
+  const { session, activeTenantId } = useAuth();
   const { data, loading, error, refresh } = useBroadcasts({ page: 1, page_size: 50 });
   const { send, sending } = useSendBroadcast();
   const { cancel, canceling } = useCancelBroadcast();
   const toast=useToast();
+  const handleDeleteDraft = async (broadcastId: string, name: string) => {
+    if (!session || !activeTenantId) return;
+    if (!confirm(`Delete draft "${name}"? This cannot be undone.`)) return;
+    try {
+      await deleteBroadcast(session.access_token, activeTenantId, broadcastId);
+      toast.push({ variant: "success", message: "Draft deleted" });
+      await refresh();
+    } catch (err) {
+      const e = err as Error;
+      toast.push({ variant: "error", message: e.message || "Delete draft failed" });
+    }
+  };
+
     const handleSend = async (broadcastId: string) => {
     if (!confirm("Send this broadcast now? This cannot be undone.")) return;
     try {
@@ -2682,6 +2738,14 @@ function BroadcastsScreen() {
                         style={{ background: canceling ? "#CBD5E1" : "#FEE2E2", color: "#991B1B" }}
                       >
                         {canceling ? "Canceling…" : "Cancel"}
+                      </button>
+                    )}
+                    {b.status === "draft" && (
+                      <button
+                        onClick={() => handleDeleteDraft(b.id, b.name)}
+                        className="text-red-600 text-xs hover:underline ml-2"
+                      >
+                        Delete
                       </button>
                     )}
                   </td>
@@ -2862,7 +2926,7 @@ function PlatformCreateTenantScreen({ onDone }: { onDone: () => void }) {
 }
 
 function BranchesScreen() {
-  const { session, activeTenantId, activeMembership } = useAuth();
+  const { session, activeTenantId, activeMembership, me } = useAuth();
   const { branches, loading, error } = useBranches();
   const toast = useToast();
   const [showAdd, setShowAdd] = useState(false);
@@ -2870,7 +2934,7 @@ function BranchesScreen() {
   const [newType, setNewType] = useState<'physical' | 'virtual'>('physical');
   const [busy, setBusy] = useState(false);
 
-  const isAdmin = activeMembership?.role === 'tenant_admin';
+  const isAdmin = activeMembership?.role === 'tenant_admin' || Boolean(me?.is_platform_admin);
   const activeCount = branches.filter((b) => b.status !== 'archived').length;
 
   async function refresh() {
@@ -2958,7 +3022,7 @@ function BranchesScreen() {
 
       {error && <div className="text-red-600 text-sm mt-3">{error}</div>}
 
-      {showAdd && (
+      {showAdd && isAdmin && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
           <div className="bg-white p-6 rounded shadow-lg w-96 space-y-3">
             <h3 className="font-semibold">Add a branch</h3>
@@ -3463,7 +3527,7 @@ export default function App() {
   }
 
   // Map screen names to URL paths and back — keeps refresh/back-button sane.
-const VALID_SCREENS = ["dashboard", "contacts", "campaign", "templates", "logs", "users", "platform-create-tenant"] as const;
+const VALID_SCREENS = ["dashboard", "contacts", "campaign", "templates", "logs", "users", "branches", "platform-create-tenant"] as const;
 type ScreenName = typeof VALID_SCREENS[number];
 
 function screenFromPath(): ScreenName {
@@ -3501,6 +3565,7 @@ useEffect(() => {
     else if (id === "logs") setScreen("logs");
     else if (id === "templates") setScreen("templates");
     else if (id === "users") setScreen("users");
+    else if (id === "branches") setScreen("branches");
     else if (id === "platform-create-tenant") setScreen("platform-create-tenant");
     else setScreen("dashboard");
   };
@@ -3511,6 +3576,7 @@ useEffect(() => {
     screen === "logs" ? "logs" :
     screen === "templates" ? "templates" :
     screen === "users" ? "users" :
+    screen === "branches" ? "branches" :
     screen === "platform-create-tenant" ? "platform-create-tenant" :
     "dashboard";
 
@@ -3545,6 +3611,7 @@ useEffect(() => {
           {screen === "logs"      && <MessagesScreen />}
           {screen === "templates" && <TemplatesScreen />}
           {screen === "users"     && <UsersScreen />}
+          {screen === "branches"  && <BranchesScreen />}
           {screen === "platform-create-tenant" && <PlatformCreateTenantScreen onDone={() => setScreen("dashboard")} />}
 
         </main>
