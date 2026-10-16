@@ -20,7 +20,6 @@ import {
   useBranches,
   useBroadcasts,
   useContacts,
-  useContactsCount,
   useCreateBroadcast,
   useDashboard,
   usePhoneNumbers,
@@ -1751,8 +1750,6 @@ function ContactsScreen() {
   const invalidPastedCount = parsedPastes.filter((p) => p.status === "invalid").length;
 
   const { branches } = useBranches();
-  const { count: countData } = useContactsCount() as { count: number | null };
-
   const selectedBranch = branchFilter || undefined;
   const pageSize = 25;
   const contactsParams = useMemo(
@@ -1947,9 +1944,7 @@ function ContactsScreen() {
         <>
           <div className="flex items-center justify-between mb-4">
             <p className="text-sm" style={{ color: "#64748B" }}>
-              {countData !== null
-                ? `${countData.toLocaleString()} total contacts`
-                : "Loading count…"}
+              {`${total.toLocaleString()} total contacts`}
             </p>
             <button
               onClick={() => {
