@@ -158,7 +158,7 @@ export interface CampaignStatusCounts {
 export interface LatestBroadcast {
   id: string;
   name: string;
-  branch_name: string;
+  branch_name: string | null;
   status: string;
   recipient_count: number;
   sent_at: string | null;
@@ -210,7 +210,7 @@ export interface MessageRow {
   campaign_name: string;
   phone_e164: string;
   meta_message_id: string | null;
-  branch_name: string;
+  branch_name: string | null;
   status: string;
   queued_at: string | null;
   sent_at: string | null;
@@ -228,10 +228,13 @@ export interface MessagesListResponse {
 }
 
 export interface MessagesKpisResponse {
-  total_sent: number | null;
-  total_delivered: number | null;
-  total_read: number | null;
-  total_failed: number | null;
+  delivered_rate: { value: number; trend_pct: number };
+  read_rate: { value: number; trend_pct: number };
+  queue_latency_ms: { avg: number | null; p95: number | null };
+  total_sent: number;
+  total_delivered: number;
+  total_read: number;
+  total_failed: number;
 }
 
 export interface UploadPreviewRow {

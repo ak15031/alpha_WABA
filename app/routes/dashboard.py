@@ -88,7 +88,7 @@ class CampaignStatusResponse(BaseModel):
 class LatestBroadcastRow(BaseModel):
     id: str
     name: str
-    branch_name: str
+    branch_name: str | None
     status: str
     recipient_count: int
     sent_at: str | None
@@ -442,7 +442,7 @@ async def dashboard_latest_broadcasts(
             Branch.name.label("branch_name"),
             CampaignStats.total_recipients,
         )
-        .join(Branch, Branch.id == Campaign.branch_id)
+        .outerjoin(Branch, Branch.id == Campaign.branch_id)
         .outerjoin(CampaignStats, CampaignStats.campaign_id == Campaign.id)
         .order_by(Campaign.created_at.desc())
         .limit(limit)

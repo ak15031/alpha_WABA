@@ -993,7 +993,7 @@ function DashboardScreen() {
     () =>
       data?.latest.map((b: LatestBroadcast) => ({
         name: b.name,
-        branch: b.branch_name,
+        branch: b.branch_name ?? "—",
         status: humanizeStatus(b.status),
         time: b.sent_at ? timeAgo(b.sent_at) : "—",
         reach: b.recipient_count.toLocaleString(),

@@ -69,6 +69,10 @@ class MessagesKpisResponse(BaseModel):
     delivered_rate: RateKpi
     read_rate: RateKpi
     queue_latency_ms: LatencyKpi
+    total_sent: int
+    total_delivered: int
+    total_read: int
+    total_failed: int
 
 
 class MessageRow(BaseModel):
@@ -77,7 +81,7 @@ class MessageRow(BaseModel):
     campaign_name: str
     phone_e164: str
     meta_message_id: str | None
-    branch_name: str
+    branch_name: str | None
     status: str
     queued_at: str | None
     sent_at: str | None
@@ -226,6 +230,9 @@ async def messages_kpis(
     read_prev = await _count_between(
         session, CampaignRecipient.read_at, prev_start, prev_end, branch_uuid
     )
+    failed_now = await _count_between(
+        session, CampaignRecipient.failed_at, start, end, branch_uuid
+    )
 
     delivered_rate_now = (delivered_now / sent_now) if sent_now else 0.0
     delivered_rate_prev = (delivered_prev / sent_prev) if sent_prev else 0.0
@@ -272,6 +279,10 @@ async def messages_kpis(
             trend_pct=_trend_pct(read_rate_now, read_rate_prev),
         ),
         queue_latency_ms=LatencyKpi(avg=avg_ms, p95=p95_ms),
+        total_sent=sent_now,
+        total_delivered=delivered_now,
+        total_read=read_now,
+        total_failed=failed_now,
     )
 
 
@@ -313,7 +324,7 @@ async def list_messages(
             Branch.name.label("branch_name"),
         )
         .join(Campaign, Campaign.id == CampaignRecipient.campaign_id)
-        .join(Branch, Branch.id == Campaign.branch_id)
+        .outerjoin(Branch, Branch.id == Campaign.branch_id)
     )
 
     if search:
@@ -405,7 +416,7 @@ async def get_message(
             Branch.name.label("branch_name"),
         )
         .join(Campaign, Campaign.id == CampaignRecipient.campaign_id)
-        .join(Branch, Branch.id == Campaign.branch_id)
+        .outerjoin(Branch, Branch.id == Campaign.branch_id)
         .where(CampaignRecipient.id == mid)
     )
     row = result.first()
