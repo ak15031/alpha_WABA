@@ -283,7 +283,8 @@ export interface GroupUploadResponse {
   group_id: string;
   total_rows: number;
   matched: number;
-  not_found: number;
+  created: number;
+  reactivated: number;
   already_member: number;
   errors: GroupUploadError[];
   committed: boolean;
@@ -675,11 +676,14 @@ export const api = {
   uploadToGroup: async (
     token: string,
     tenantId: string,
-    opts: { groupId: string; file: File; commit: boolean },
+    opts: { groupId: string; file: File; branchId: string; commit: boolean },
   ): Promise<GroupUploadResponse> => {
     const fd = new FormData();
     fd.append("file", opts.file);
-    const url = `${API_URL}/groups/${opts.groupId}/upload${qs({ commit: opts.commit })}`;
+    const url = `${API_URL}/groups/${opts.groupId}/upload${qs({
+      branch_id: opts.branchId,
+      commit: opts.commit,
+    })}`;
     const res = await fetch(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "X-Tenant-Id": tenantId },

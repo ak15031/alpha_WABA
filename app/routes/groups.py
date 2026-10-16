@@ -2,9 +2,8 @@
 
   GET  /groups              — list groups for the active tenant, with member counts
   POST /groups               — create a group (name, description)
-  POST /groups/{id}/upload    — CSV upload: matches existing contacts by phone_e164,
-                                 links them into the group. Same preview/commit pattern
-                                 as /contacts/upload.
+  POST /groups/{id}/upload    — CSV upload: creates or reactivates contacts by phone_e164,
+                                 then links them into the group.
   DELETE /groups/{id}/members/{contact_id} — remove one contact from a group
 
 Groups are cross-branch by design — a group can span multiple branches
@@ -14,27 +13,26 @@ from __future__ import annotations
 
 import csv
 import io
-import re
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import (
-    CurrentUser,
-    TenantContext,
-    get_active_tenant_context,
-    get_current_user,
-    get_tenant_scoped_session,
+    CurrentUser, TenantContext,
+    get_active_tenant_context, get_current_user, get_tenant_scoped_session,
 )
-from app.models import Contact, ContactGroup, ContactGroupMember
+from app.models import (
+    Branch, Contact, ContactGroup, ContactGroupMember,
+    ContactOptInStatus, ContactSource,
+)
+from app.routes.contacts import normalize_phone
 
 router = APIRouter(prefix="/groups", tags=["groups"])
-
-_E164_RE = re.compile(r"^\+[1-9]\d{1,14}$")
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +68,8 @@ class GroupUploadResponse(BaseModel):
     group_id: str
     total_rows: int
     matched: int
-    not_found: int
+    created: int
+    reactivated: int
     already_member: int
     errors: list[GroupUploadError]
     committed: bool
@@ -81,8 +80,8 @@ class GroupUploadResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _normalize_phone(raw: str) -> str:
-    return re.sub(r"[\s\-\(\)]", "", raw or "").strip()
+_PHONE_ALIASES = {"phone", "phone_number", "phonenumber", "mobile", "whatsapp", "number"}
+_NAME_ALIASES = {"name", "full_name", "fullname", "contact_name"}
 
 
 # ---------------------------------------------------------------------------
@@ -166,26 +165,36 @@ async def create_group(
 @router.post("/{group_id}/upload", response_model=GroupUploadResponse)
 async def upload_to_group(
     group_id: str,
-    file: UploadFile = File(..., description="CSV or plain-text list with a phone column"),
-    commit: bool = False,
+    file: UploadFile = File(..., description="CSV or plain-text list with phones"),
+    branch_id: str = Query(
+        ...,
+        description="Branch to attach any NEW contacts to. Required.",
+    ),
+    commit: bool = Query(False),
     ctx: TenantContext = Depends(get_active_tenant_context),
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_tenant_scoped_session),
 ) -> GroupUploadResponse:
-    """Match phones against existing contacts and link them into the group.
+    """Upload phones into a group, creating or reactivating contacts as needed.
 
-    Does NOT create new contacts — a group is a view over contacts that
-    already exist. Phones not found in the tenant's contact list are
-    reported as errors, not silently created (upload to Contacts first).
+    Mirrors /contacts/upload so contacts do not need to be pre-populated.
     """
     try:
         group_uuid = uuid.UUID(group_id)
     except ValueError:
         raise HTTPException(status_code=422, detail="group_id must be a UUID")
+    try:
+        branch_uuid = uuid.UUID(branch_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="branch_id must be a UUID")
 
     group = await session.get(ContactGroup, group_uuid)
     if group is None:
         raise HTTPException(status_code=404, detail="Group not found")
+
+    branch = await session.get(Branch, branch_uuid)
+    if branch is None:
+        raise HTTPException(status_code=404, detail="Branch not found in this tenant")
 
     file_bytes = await file.read()
     if not file_bytes:
@@ -196,75 +205,117 @@ async def upload_to_group(
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="File must be UTF-8 encoded")
 
-    # Accept either a proper CSV with a phone column, or a plain list of
-    # one-phone-per-line (mirrors the paste-mode flow used for Contacts).
     lines = [ln.strip() for ln in text_content.splitlines() if ln.strip()]
-    phone_col_present = bool(lines) and any(
-        h in lines[0].lower() for h in ("phone", "mobile", "number", "whatsapp")
+    first_line_lower = lines[0].lower() if lines else ""
+    phone_col_present = any(
+        header in first_line_lower
+        for header in ("phone", "mobile", "number", "whatsapp")
     )
 
-    raw_phones: list[str] = []
+    rows: list[dict[str, Any]] = []
+    errors: list[GroupUploadError] = []
+    seen: set[str] = set()
+
     if phone_col_present:
         reader = csv.DictReader(io.StringIO(text_content))
+        fieldnames = reader.fieldnames or []
         phone_key = next(
-            (h for h in (reader.fieldnames or []) if h.strip().lower() in
-             {"phone", "phone_number", "mobile", "whatsapp", "number"}),
+            (
+                header for header in fieldnames
+                if header.strip().lower().replace(" ", "_") in _PHONE_ALIASES
+            ),
             None,
         )
         if phone_key is None:
             raise HTTPException(status_code=400, detail="No phone column found")
-        for row in reader:
-            raw_phones.append(row.get(phone_key, ""))
-    else:
-        raw_phones = lines
-
-    errors: list[GroupUploadError] = []
-    valid_phones: list[str] = []
-    seen: set[str] = set()
-
-    for i, raw in enumerate(raw_phones, start=2):
-        cleaned = _normalize_phone(raw)
-        if not cleaned:
-            errors.append(GroupUploadError(row=i, phone_raw=raw, reason="missing_phone"))
-            continue
-        if not _E164_RE.match(cleaned):
-            errors.append(GroupUploadError(row=i, phone_raw=raw, reason="invalid_e164"))
-            continue
-        if cleaned in seen:
-            errors.append(GroupUploadError(row=i, phone_raw=raw, reason="duplicate_in_upload"))
-            continue
-        seen.add(cleaned)
-        valid_phones.append(cleaned)
-
-    if not valid_phones:
-        return GroupUploadResponse(
-            group_id=str(group.id),
-            total_rows=len(raw_phones),
-            matched=0,
-            not_found=0,
-            already_member=0,
-            errors=errors,
-            committed=False,
+        name_key = next(
+            (
+                header for header in fieldnames
+                if header.strip().lower().replace(" ", "_") in _NAME_ALIASES
+            ),
+            None,
         )
+        for row_number, raw_row in enumerate(reader, start=2):
+            raw_phone = (raw_row.get(phone_key) or "").strip()
+            phone = normalize_phone(raw_phone)
+            if not phone:
+                errors.append(
+                    GroupUploadError(row=row_number, phone_raw=raw_phone, reason="invalid_e164")
+                )
+                continue
+            if phone in seen:
+                errors.append(
+                    GroupUploadError(
+                        row=row_number, phone_raw=raw_phone, reason="duplicate_in_upload"
+                    )
+                )
+                continue
+            seen.add(phone)
+            name = (raw_row.get(name_key) or "").strip() if name_key else None
+            rows.append(
+                {
+                    "row": row_number,
+                    "phone_raw": raw_phone,
+                    "phone_e164": phone,
+                    "full_name": name,
+                }
+            )
+    else:
+        for row_number, raw_phone in enumerate(lines, start=1):
+            phone = normalize_phone(raw_phone)
+            if not phone:
+                errors.append(
+                    GroupUploadError(
+                        row=row_number, phone_raw=raw_phone, reason="invalid_e164"
+                    )
+                )
+                continue
+            if phone in seen:
+                errors.append(
+                    GroupUploadError(
+                        row=row_number, phone_raw=raw_phone, reason="duplicate_in_upload"
+                    )
+                )
+                continue
+            seen.add(phone)
+            rows.append(
+                {
+                    "row": row_number,
+                    "phone_raw": raw_phone,
+                    "phone_e164": phone,
+                    "full_name": None,
+                }
+            )
 
-    # Match against existing contacts in this tenant
-    contacts_result = await session.execute(
-        select(Contact).where(Contact.phone_e164.in_(valid_phones))
+    valid_phones = [row["phone_e164"] for row in rows]
+    existing_contacts: dict[str, Contact] = {}
+    if valid_phones:
+        existing_result = await session.execute(
+            select(Contact).where(Contact.phone_e164.in_(valid_phones))
+        )
+        existing_contacts = {
+            contact.phone_e164: contact for contact in existing_result.scalars().all()
+        }
+
+    matched = sum(
+        1 for row in rows
+        if (contact := existing_contacts.get(row["phone_e164"])) is not None
+        and not getattr(contact, "is_archived", False)
     )
-    found_contacts = {c.phone_e164: c for c in contacts_result.scalars().all()}
-
-    not_found = [p for p in valid_phones if p not in found_contacts]
-    for p in not_found:
-        errors.append(GroupUploadError(row=0, phone_raw=p, reason="not_found_in_contacts"))
-
-    matched_contacts = [found_contacts[p] for p in valid_phones if p in found_contacts]
+    reactivated = sum(
+        1 for row in rows
+        if (contact := existing_contacts.get(row["phone_e164"])) is not None
+        and getattr(contact, "is_archived", False)
+    )
+    created = sum(1 for row in rows if row["phone_e164"] not in existing_contacts)
 
     if not commit:
         return GroupUploadResponse(
             group_id=str(group.id),
-            total_rows=len(raw_phones),
-            matched=len(matched_contacts),
-            not_found=len(not_found),
+            total_rows=len(rows) + len(errors),
+            matched=matched,
+            created=created,
+            reactivated=reactivated,
             already_member=0,
             errors=errors,
             committed=False,
@@ -274,24 +325,47 @@ async def upload_to_group(
     existing_members_result = await session.execute(
         select(ContactGroupMember.contact_id).where(ContactGroupMember.group_id == group_uuid)
     )
-    existing_member_ids = {row[0] for row in existing_members_result.all()}
+    existing_member_ids: set[uuid.UUID] = {
+        row[0] for row in existing_members_result.all()
+    }
 
-    added = 0
     already_member = 0
-    for contact in matched_contacts:
+    for row in rows:
+        contact = existing_contacts.get(row["phone_e164"])
+        if contact is None:
+            contact = Contact(
+                tenant_id=ctx.tenant_id,
+                branch_id=branch_uuid,
+                phone_e164=row["phone_e164"],
+                full_name=row["full_name"],
+                opt_in_status=ContactOptInStatus.opted_in,
+                source=ContactSource.csv_import,
+                custom_fields={},
+            )
+            session.add(contact)
+            await session.flush()
+            existing_contacts[row["phone_e164"]] = contact
+        elif getattr(contact, "is_archived", False):
+            contact.is_archived = False
+            if row["full_name"]:
+                contact.full_name = row["full_name"]
+            contact.branch_id = branch_uuid
+            contact.updated_at = datetime.now(timezone.utc)
+
         if contact.id in existing_member_ids:
             already_member += 1
-            continue
-        session.add(ContactGroupMember(group_id=group_uuid, contact_id=contact.id))
-        added += 1
+        else:
+            session.add(ContactGroupMember(group_id=group_uuid, contact_id=contact.id))
+            existing_member_ids.add(contact.id)
 
     await session.flush()
 
     return GroupUploadResponse(
         group_id=str(group.id),
-        total_rows=len(raw_phones),
-        matched=added,
-        not_found=len(not_found),
+        total_rows=len(rows) + len(errors),
+        matched=matched,
+        created=created,
+        reactivated=reactivated,
         already_member=already_member,
         errors=errors,
         committed=True,

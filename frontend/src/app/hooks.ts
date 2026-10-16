@@ -694,7 +694,12 @@ export function useCreateGroup(): {
 // ─── useUploadToGroup ────────────────────────────────────────────────────────
 
 export function useUploadToGroup(): {
-  upload: (groupId: string, file: File, commit: boolean) => Promise<GroupUploadResponse>;
+  upload: (
+    groupId: string,
+    file: File,
+    branchId: string,
+    commit: boolean,
+  ) => Promise<GroupUploadResponse>;
   uploading: boolean;
   error: string | null;
 } {
@@ -702,13 +707,23 @@ export function useUploadToGroup(): {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const upload = async (groupId: string, file: File, commit: boolean) => {
+  const upload = async (
+    groupId: string,
+    file: File,
+    branchId: string,
+    commit: boolean,
+  ) => {
     if (!session || !activeTenantId)
       throw new Error("Not authenticated or no tenant selected");
     setUploading(true);
     setError(null);
     try {
-      return await api.uploadToGroup(session.access_token, activeTenantId, { groupId, file, commit });
+      return await api.uploadToGroup(session.access_token, activeTenantId, {
+        groupId,
+        file,
+        branchId,
+        commit,
+      });
     } catch (e) {
       const msg = (e as Error).message ?? String(e);
       setError(msg);

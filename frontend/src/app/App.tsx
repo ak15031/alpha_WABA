@@ -1337,16 +1337,21 @@ function GroupsPanel() {
   const { groups, loading, error, refresh } = useGroups();
   const { create, creating } = useCreateGroup();
   const { upload, uploading } = useUploadToGroup();
+  const { branches } = useBranches();
   const toast = useToast();
 
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
   const [newGroupDesc, setNewGroupDesc] = useState("");
 
+  const [showUploadDialog, setShowUploadDialog] = useState(false);
   const [uploadTargetGroup, setUploadTargetGroup] = useState<string | null>(null);
+  const [uploadBranchId, setUploadBranchId] = useState("");
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [pendingUploadResult, setPendingUploadResult] = useState<{
     groupId: string;
+    branchId: string;
     file: File;
     result: GroupUploadResponse;
   } | null>(null);
@@ -1371,13 +1376,22 @@ function GroupsPanel() {
     }
   };
 
-  const handleFileChosen = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !uploadTargetGroup) return;
+  const handleFileChosen = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setUploadFile(e.target.files?.[0] ?? null);
     e.target.value = "";
+  };
+
+  const handlePreviewUpload = async () => {
+    if (!uploadFile || !uploadTargetGroup || !uploadBranchId) return;
     try {
-      const result = await upload(uploadTargetGroup, file, false);
-      setPendingUploadResult({ groupId: uploadTargetGroup, file, result });
+      const result = await upload(uploadTargetGroup, uploadFile, uploadBranchId, false);
+      setPendingUploadResult({
+        groupId: uploadTargetGroup,
+        branchId: uploadBranchId,
+        file: uploadFile,
+        result,
+      });
+      setShowUploadDialog(false);
     } catch (err) {
       const e2 = err as Error & { status?: number; body?: unknown };
       toast.push({
@@ -1392,13 +1406,20 @@ function GroupsPanel() {
   const confirmUpload = async () => {
     if (!pendingUploadResult) return;
     try {
-      const result = await upload(pendingUploadResult.groupId, pendingUploadResult.file, true);
+      const result = await upload(
+        pendingUploadResult.groupId,
+        pendingUploadResult.file,
+        pendingUploadResult.branchId,
+        true,
+      );
       toast.push({
         variant: "success",
-        message: `Added ${result.matched} contact${result.matched !== 1 ? "s" : ""} to group.`,
+        message: `Processed ${result.matched} existing, created ${result.created}, and reactivated ${result.reactivated} contacts.`,
       });
       setPendingUploadResult(null);
       setUploadTargetGroup(null);
+      setUploadBranchId("");
+      setUploadFile(null);
       refresh();
     } catch (err) {
       const e = err as Error & { status?: number; body?: unknown };
@@ -1454,7 +1475,9 @@ function GroupsPanel() {
             <button
               onClick={() => {
                 setUploadTargetGroup(g.id);
-                fileInputRef.current?.click();
+                setUploadBranchId("");
+                setUploadFile(null);
+                setShowUploadDialog(true);
               }}
               className="text-xs px-3 py-1.5 rounded-md font-medium"
               style={{ border: "1px solid #E2E8F0", color: "#334155" }}
@@ -1465,13 +1488,74 @@ function GroupsPanel() {
         ))}
       </div>
 
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".csv,.txt"
-        onChange={handleFileChosen}
-        style={{ display: "none" }}
-      />
+      {showUploadDialog && (
+        <div
+          style={{
+            position: "fixed", inset: 0, background: "rgba(15,23,42,0.5)",
+            display: "flex", alignItems: "center", justifyContent: "center", padding: 24, zIndex: 100,
+          }}
+        >
+          <div className="rounded-lg p-6 max-w-md w-full" style={{ background: "#fff" }}>
+            <h3 className="font-semibold mb-4" style={{ color: "#0F172A" }}>Upload to Group</h3>
+            <div className="mb-4">
+              <label className="block text-sm font-semibold text-gray-900 mb-1">
+                Target branch <span className="text-red-500">*</span>
+              </label>
+              <select
+                value={uploadBranchId}
+                onChange={(e) => setUploadBranchId(e.target.value)}
+                className={`w-full border-2 rounded p-2 ${
+                  !uploadBranchId ? "border-red-400 bg-red-50" : "border-gray-300"
+                }`}
+              >
+                <option value="">Select the branch where these contacts belong</option>
+                {branches.map((branch) => (
+                  <option key={branch.id} value={branch.id}>{branch.name}</option>
+                ))}
+              </select>
+              {!uploadBranchId && (
+                <p className="text-xs text-red-600 mt-1">
+                  Choose a branch before uploading. New contacts will attach to this branch.
+                </p>
+              )}
+            </div>
+            <a
+              href="/samples/groups-sample.csv"
+              download
+              className="text-xs text-blue-600 hover:underline"
+            >
+              Download sample CSV
+            </a>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv,.txt"
+              onChange={handleFileChosen}
+              className="block w-full text-sm mt-3"
+            />
+            <div className="flex justify-end gap-2 mt-5">
+              <button
+                onClick={() => {
+                  setShowUploadDialog(false);
+                  setUploadTargetGroup(null);
+                  setUploadFile(null);
+                }}
+                className="px-4 py-2 rounded-md text-sm"
+                style={{ border: "1px solid #E2E8F0" }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handlePreviewUpload}
+                disabled={!uploadBranchId || !uploadFile || uploading}
+                className="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-50 disabled:bg-gray-400"
+              >
+                {uploading ? "Uploading…" : "Preview"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Create group dialog */}
       {showCreateDialog && (
@@ -1529,26 +1613,39 @@ function GroupsPanel() {
         >
           <div className="rounded-lg p-6 max-w-md w-full" style={{ background: "#fff" }}>
             <h3 className="font-semibold mb-4" style={{ color: "#0F172A" }}>Confirm Upload</h3>
-            <div className="grid grid-cols-3 gap-3 mb-4 text-sm">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-4 text-sm">
+              <div>
+                <div style={{ color: "#64748B" }}>Created</div>
+                <div className="font-semibold" style={{ color: "#2563EB" }}>{pendingUploadResult.result.created}</div>
+              </div>
+              <div>
+                <div style={{ color: "#64748B" }}>Reactivated</div>
+                <div className="font-semibold" style={{ color: "#D97706" }}>{pendingUploadResult.result.reactivated}</div>
+              </div>
               <div>
                 <div style={{ color: "#64748B" }}>Matched</div>
                 <div className="font-semibold" style={{ color: "#16A34A" }}>{pendingUploadResult.result.matched}</div>
               </div>
               <div>
-                <div style={{ color: "#64748B" }}>Not found</div>
-                <div className="font-semibold" style={{ color: "#DC2626" }}>{pendingUploadResult.result.not_found}</div>
-              </div>
-              <div>
                 <div style={{ color: "#64748B" }}>Already in group</div>
                 <div className="font-semibold" style={{ color: "#64748B" }}>{pendingUploadResult.result.already_member}</div>
               </div>
+              <div>
+                <div style={{ color: "#64748B" }}>Invalid rows</div>
+                <div className="font-semibold" style={{ color: "#DC2626" }}>{pendingUploadResult.result.errors.length}</div>
+              </div>
             </div>
             <p className="text-xs mb-4" style={{ color: "#64748B" }}>
-              Only phones already in your Contacts list can be added. Upload new contacts first if needed.
+              New contacts will be created in the selected branch; archived contacts will be reactivated.
             </p>
             <div className="flex justify-end gap-2">
               <button
-                onClick={() => setPendingUploadResult(null)}
+                onClick={() => {
+                  setPendingUploadResult(null);
+                  setUploadTargetGroup(null);
+                  setUploadBranchId("");
+                  setUploadFile(null);
+                }}
                 className="px-4 py-2 rounded-md text-sm"
                 style={{ border: "1px solid #E2E8F0" }}
               >
@@ -1556,7 +1653,11 @@ function GroupsPanel() {
               </button>
               <button
                 onClick={confirmUpload}
-                disabled={uploading || pendingUploadResult.result.matched === 0}
+                disabled={uploading || (
+                  pendingUploadResult.result.matched
+                  + pendingUploadResult.result.created
+                  + pendingUploadResult.result.reactivated === 0
+                )}
                 className="px-4 py-2 rounded-md text-sm font-medium text-white"
                 style={{ background: uploading ? "#CBD5E1" : "#2563EB" }}
               >
@@ -1576,6 +1677,8 @@ function ContactsScreen() {
 
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [branchFilter, setBranchFilter] = useState<string>("");
+  const [uploadBranchId, setUploadBranchId] = useState("");
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [page, setPage] = useState(1);
   const [uploadMode, setUploadMode] = useState<"file" | "paste">("file");
   const { update: updateContact, updating } = useUpdateContact();
@@ -1676,18 +1779,21 @@ function ContactsScreen() {
     setPage(1);
   }, [debouncedSearch, branchFilter]);
 
-    const handleFileChosen = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const handleFileChosen = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setUploadFile(e.target.files?.[0] ?? null);
     e.target.value = "";
-    const branchId = branchFilter || branches[0]?.id;
-    if (!branchId) {
-      toast.push({ variant: "error", message: "Branch Required", detail: "Please select a branch before uploading contacts." });
-      return;
-    }
+  };
+
+  const handleFilePreview = async () => {
+    if (!uploadFile || !uploadBranchId) return;
     try {
-      const preview = await upload(file, branchId, false);
-      setPendingPreview({ file, branchId, preview, source: "file" });
+      const preview = await upload(uploadFile, uploadBranchId, false);
+      setPendingPreview({
+        file: uploadFile,
+        branchId: uploadBranchId,
+        preview,
+        source: "file",
+      });
       setShowUploadDialog(false);
     } catch (err) {
       const ex = err as Error & { status?: number; body?: any };
@@ -1701,21 +1807,18 @@ function ContactsScreen() {
   };
 
   const handlePasteSubmit = async () => {
-    const branchId = branchFilter || branches[0]?.id;
-    if (!branchId) {
-      toast.push({ variant: "error", message: "Branch Required", detail: "Please select a branch before uploading contacts." });
-      return;
-    }
+    if (!uploadBranchId) return;
     if (validPastedCount === 0) {
       toast.push({ variant: "error", message: "No Valid Numbers", detail: "No valid phone numbers to import." });
       return;
     }
     const file = phonesToCsvFile(parsedPastes);
     try {
-      const preview = await upload(file, branchId, false);
-      setPendingPreview({ file, branchId, preview, source: "paste" });
+      const preview = await upload(file, uploadBranchId, false);
+      setPendingPreview({ file, branchId: uploadBranchId, preview, source: "paste" });
       setShowUploadDialog(false);
       setPastedText("");
+      setUploadFile(null);
     } catch (err) {
       const ex = err as Error & { status?: number; body?: any };
       toast.push({
@@ -1805,7 +1908,11 @@ function ContactsScreen() {
                 : "Loading count…"}
             </p>
             <button
-              onClick={() => setShowUploadDialog(true)}
+              onClick={() => {
+                setUploadBranchId("");
+                setUploadFile(null);
+                setShowUploadDialog(true);
+              }}
               disabled={branches.length === 0}
               className="px-4 py-2 rounded-md text-sm font-medium text-white flex items-center gap-2"
               style={{
@@ -2027,6 +2134,8 @@ function ContactsScreen() {
                 onClick={() => {
                   setShowUploadDialog(false);
                   setPastedText("");
+                  setUploadFile(null);
+                  setUploadBranchId("");
                 }}
               >
                 <X size={16} />
@@ -2060,6 +2169,28 @@ function ContactsScreen() {
             </div>
 
             <div className="p-4 flex-1 overflow-y-auto">
+              <div className="mb-4">
+                <label className="block text-sm font-semibold text-gray-900 mb-1">
+                  Target branch <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={uploadBranchId}
+                  onChange={(e) => setUploadBranchId(e.target.value)}
+                  className={`w-full border-2 rounded p-2 ${
+                    !uploadBranchId ? "border-red-400 bg-red-50" : "border-gray-300"
+                  }`}
+                >
+                  <option value="">Select the branch where these contacts belong</option>
+                  {branches.map((branch) => (
+                    <option key={branch.id} value={branch.id}>{branch.name}</option>
+                  ))}
+                </select>
+                {!uploadBranchId && (
+                  <p className="text-xs text-red-600 mt-1">
+                    Choose a branch before uploading. New contacts will attach to this branch.
+                  </p>
+                )}
+              </div>
               {uploadMode === "file" && (
                 <div>
                   <p className="text-sm mb-4" style={{ color: "#475569" }}>
@@ -2085,8 +2216,15 @@ function ContactsScreen() {
                     }}
                   >
                     <Upload size={24} />
-                    {uploading ? "Uploading…" : "Choose CSV file"}
+                    {uploadFile ? uploadFile.name : "Choose CSV file"}
                   </button>
+                  <a
+                    href="/samples/contacts-sample.csv"
+                    download
+                    className="inline-block mt-2 text-xs text-blue-600 hover:underline"
+                  >
+                    Download sample CSV
+                  </a>
                 </div>
               )}
 
@@ -2144,34 +2282,44 @@ function ContactsScreen() {
               )}
             </div>
 
-            {uploadMode === "paste" && (
-              <div
-                className="p-4 flex justify-end gap-2"
-                style={{ borderTop: "1px solid #E2E8F0" }}
+            <div
+              className="p-4 flex justify-end gap-2"
+              style={{ borderTop: "1px solid #E2E8F0" }}
+            >
+              <button
+                onClick={() => {
+                  setShowUploadDialog(false);
+                  setPastedText("");
+                  setUploadFile(null);
+                  setUploadBranchId("");
+                }}
+                className="px-4 py-2 rounded-md text-sm"
+                style={{ border: "1px solid #E2E8F0", background: "#fff", color: "#0F172A" }}
               >
-                <button
-                  onClick={() => {
-                    setShowUploadDialog(false);
-                    setPastedText("");
-                  }}
-                  className="px-4 py-2 rounded-md text-sm"
-                  style={{ border: "1px solid #E2E8F0", background: "#fff", color: "#0F172A" }}
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handlePasteSubmit}
-                  disabled={uploading || validPastedCount === 0}
-                  className="px-4 py-2 rounded-md text-sm font-medium text-white"
-                  style={{
-                    background: uploading || validPastedCount === 0 ? "#CBD5E1" : "#2563EB",
-                    cursor: uploading || validPastedCount === 0 ? "not-allowed" : "pointer",
-                  }}
-                >
-                  {uploading ? "Preparing…" : `Preview ${validPastedCount} phones`}
-                </button>
-              </div>
-            )}
+                Cancel
+              </button>
+              <button
+                onClick={uploadMode === "paste" ? handlePasteSubmit : handleFilePreview}
+                disabled={
+                  !uploadBranchId
+                  || uploading
+                  || (uploadMode === "paste" ? validPastedCount === 0 : !uploadFile)
+                }
+                className="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-50 disabled:bg-gray-400"
+                style={{
+                  cursor: uploading || !uploadBranchId
+                    || (uploadMode === "paste" ? validPastedCount === 0 : !uploadFile)
+                    ? "not-allowed"
+                    : "pointer",
+                }}
+              >
+                {uploading
+                  ? "Uploading…"
+                  : uploadMode === "paste"
+                    ? `Preview ${validPastedCount} phones`
+                    : "Preview"}
+              </button>
+            </div>
           </div>
         </div>
       )}
